@@ -7,10 +7,22 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #define SECTOR_SIZE 512
+#define INFO_SIZE 32
+#define NAME_SIZE 8
+#define EXT_SIZE 3
+#define CREATE_TIME_OFFSET 14
+#define CREATE_DATE_OFFSET 16
+#define LAST_ACCESS_DATE 18
+#define LAST_MOD_TIME 22
+#define LAST_MOD_DATE 24
+#define FIRST_CLASTER_OFFSET 26
+#define FILE_SIZE_OFFSET 28
+
 struct volume_t {
   struct disk_t *pdisk;
   int16_t bytes_per_sector;
@@ -21,18 +33,31 @@ struct volume_t {
   uint16_t root_dir_capacity;
   uint16_t logical_sectors16;
   uint32_t logical_sectors32;
+  uint32_t volume_start;
 };
-struct file_t;
+struct file_t {
+  char name[NAME_SIZE];
+  char extension[EXT_SIZE];
+  uint16_t create_time;
+  uint16_t create_date;
+  uint16_t last_access_date;
+  uint16_t last_mod_time;
+  uint16_t last_mod_date;
+  uint16_t first_claster_adr;
+  uint32_t size;
+  uint32_t cursor;
+  struct volume_t *vol;
+};
 struct disk_t {
   int fd;
 };
 struct dir_t;
 
 struct dir_entry_t {
-  char *name; //- nazwa pliku/katalogu (w przypadku pliku nazwa ma być z kropką
-              //i rozszerzeniem), bez nadmiarowych spacji i zakończona
-              // terminatorem,
-  size_t size;             // - rozmiar pliku/katalogu w bajtach,
+  char *name;  //- nazwa pliku/katalogu (w przypadku pliku nazwa ma być z kropką
+               // i rozszerzeniem), bez nadmiarowych spacji i zakończona
+               // terminatorem,
+  size_t size; // - rozmiar pliku/katalogu w bajtach,
   uint8_t is_archived : 1; // - wartość atrybutu: plik zarchiwizowany (0 lub 1),
   uint8_t is_readonly
       : 1;               //- wartość atrybutu : plik tylko do odczytu(0 lub 1),
