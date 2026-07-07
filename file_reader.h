@@ -1,6 +1,7 @@
 #ifndef FILE_READER_H
 #define FILE_READER_H
 
+#include "ctype.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stddef.h>
@@ -22,6 +23,7 @@
 #define LAST_MOD_DATE 24
 #define FIRST_CLASTER_OFFSET 26
 #define FILE_SIZE_OFFSET 28
+#define ATTR_OFFSET 11
 
 struct volume_t {
   struct disk_t *pdisk;
@@ -51,7 +53,17 @@ struct file_t {
 struct disk_t {
   int fd;
 };
-struct dir_t;
+struct dir_t {
+  char name[NAME_SIZE];
+  uint16_t create_time;
+  uint16_t create_date;
+  uint16_t last_access_date;
+  uint16_t last_mod_time;
+  uint16_t last_mod_date;
+  uint16_t first_claster_adr;
+  uint32_t size;
+  struct volume_t *vol;
+};
 
 struct dir_entry_t {
   char *name;  //- nazwa pliku/katalogu (w przypadku pliku nazwa ma być z kropką

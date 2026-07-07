@@ -3,56 +3,98 @@
 #include "file_reader.h"
 #include "rdebug.h"
 #include "tested_declarations.h"
+#include <ctype.h>
+#include <stdint.h>
+#include <string.h>
+
+int open_helper(struct volume_t *pvolume, const char *file_name, uint8_t *info,
+                uint8_t is_file) {
+  if (!pvolume || !file_name) {
+    errno = EFAULT;
+    return 1;
+  }
+  char fat_name[NAME_SIZE + EXT_SIZE];
+  memset(fat_name, ' ', NAME_SIZE + EXT_SIZE);
+  int i = 0;
+  for (; file_name[i] != '.' && !isspace(file_name[i]); i++) {
+    if (i < NAME_SIZE) {
+      fat_name[i] = toupper(file_name[i]);
+    }
+  }
+  if (file_name[i] == '.') {
+    int ext_idx = 0;
+    i++;
+    while (file_name[i] != '\0' && ext_idx < EXT_SIZE) {
+      fat_name[NAME_SIZE + ext_idx] = toupper(file_name[i]);
+      ext_idx++;
+      i++;
+    }
+  }
+  uint64_t fat1_start = pvolume->volume_start + pvolume->reserved_sectors;
+  uint64_t root_start =
+      fat1_start + pvolume->fat_count * pvolume->sectors_per_fat;
+  uint64_t sectors_per_root =
+      pvolume->root_dir_capacity * INFO_SIZE / SECTOR_SIZE;
+  for (uint64_t i = 0; i < sectors_per_root; i++) {
+    uint8_t buf[SECTOR_SIZE];
+    disk_read(pvolume->pdisk, root_start + i, buf, 1);
+    for (uint32_t j = 0; j < SECTOR_SIZE; j += INFO_SIZE) {
+      if (buf[j] == 0x00 || buf[j] == 0xE5)
+        continue;
+      uint8_t attr = buf[j + ATTR_OFFSET];
+      uint8_t is_dir_entry = (attr & 0x10) ? 0 : 1;
+      if (is_dir_entry != is_file)
+        continue;
+      if (memcmp(buf + j, fat_name, NAME_SIZE + EXT_SIZE) == 0) {
+        memcpy(info, buf + j, INFO_SIZE);
+        return 0;
+      }
+    }
+  }
+  errno = ENOENT;
+  return 1;
+}
 
 struct file_t *file_open(struct volume_t *pvolume, const char *file_name) {
   if (!pvolume || !file_name) {
     errno = EFAULT;
     return NULL;
   }
-  uint64_t fat1_start = pvolume->volume_start + pvolume->reserved_sectors;
-  uint64_t root_start =
-      fat1_start + pvolume->fat_count * pvolume->sectors_per_fat;
-  uint64_t sectors_per_root =
-      pvolume->root_dir_capacity * sizeof(struct dir_entry_t) / SECTOR_SIZE;
-  for (uint64_t i = 0; i < sectors_per_root; i++) {
-    uint8_t *buf = malloc(SECTOR_SIZE * sizeof(uint8_t));
-    if (!buf) {
-      errno = ENOMEM;
-      return NULL;
-    }
-    disk_read(pvolume->pdisk, root_start, buf, 1);
-    for (uint32_t j = 0; j < SECTOR_SIZE; j += INFO_SIZE) {
-      if (strncmp(file_name, (const char *)(buf + j), strlen(file_name)) == 0) {
-        if (*(buf + j + 11) == 0x10 || *(buf + j + 11) == 0x08) {
-          errno = EISDIR;
-          free(buf);
-          return NULL;
-        }
-        struct file_t *file = malloc(sizeof(struct file_t));
-        if (!file) {
-          errno = ENOMEM;
-          free(buf);
-          return NULL;
-        }
-        strncpy(file->name, (const char *)(buf + j), NAME_SIZE);
-        strncpy(file->extension, (const char *)(buf + j + NAME_SIZE), EXT_SIZE);
-        file->create_time = *(uint16_t *)(buf + j + CREATE_TIME_OFFSET);
-        file->create_date = *(uint16_t *)(buf + j + CREATE_DATE_OFFSET);
-        file->last_access_date = *(uint16_t *)(buf + j + LAST_ACCESS_DATE);
-        file->last_mod_time = *(uint16_t *)(buf + j + LAST_MOD_TIME);
-        file->last_mod_date = *(uint16_t *)(buf + j + LAST_MOD_DATE);
-        file->first_claster_adr = *(uint16_t *)(buf + j + FIRST_CLASTER_OFFSET);
-        file->size = *(uint32_t *)(buf + j + FILE_SIZE_OFFSET);
-        file->cursor = 0;
-        file->vol = pvolume;
-        free(buf);
-        return file;
-      }
-    }
-    free(buf);
+
+  uint8_t entry_buf[INFO_SIZE];
+
+  if (open_helper(pvolume, file_name, entry_buf, 1) != 0) {
+    return NULL;
   }
-  errno = ENOENT;
-  return NULL;
+
+  uint8_t attr = entry_buf[ATTR_OFFSET];
+  if ((attr & 0x10) || (attr & 0x08)) {
+    errno = EISDIR;
+    return NULL;
+  }
+
+  struct file_t *file = malloc(sizeof(struct file_t));
+  if (!file) {
+    errno = ENOMEM;
+    return NULL;
+  }
+
+  strncpy(file->name, (const char *)entry_buf, NAME_SIZE);
+  strncpy(file->extension, (const char *)(entry_buf + NAME_SIZE), EXT_SIZE);
+
+  file->create_time = *(uint16_t *)(entry_buf + CREATE_TIME_OFFSET);
+  file->create_date = *(uint16_t *)(entry_buf + CREATE_DATE_OFFSET);
+  file->last_access_date = *(uint16_t *)(entry_buf + LAST_ACCESS_DATE);
+  file->last_mod_time = *(uint16_t *)(entry_buf + LAST_MOD_TIME);
+  file->last_mod_date = *(uint16_t *)(entry_buf + LAST_MOD_DATE);
+
+  file->first_claster_adr = *(uint16_t *)(entry_buf + FIRST_CLASTER_OFFSET);
+  file->size = *(uint32_t *)(entry_buf + FILE_SIZE_OFFSET);
+
+  file->cursor = 0;
+  file->vol = pvolume;
+
+  return file;
 }
 int file_close(struct file_t *stream) {
   if (!stream) {
@@ -62,14 +104,77 @@ int file_close(struct file_t *stream) {
   free(stream);
   return 0;
 }
+uint16_t find_fat_id(const struct volume_t *vol, uint16_t prev_id) {
+  if (!vol)
+    return prev_id;
+  uint32_t bytes_offset_in_fat = prev_id * 1.5;
+  uint32_t sector_id =
+      vol->volume_start + vol->reserved_sectors + (bytes_offset_in_fat / 512);
+
+  uint8_t buffer[SECTOR_SIZE * 2];
+  if (disk_read(vol->pdisk, sector_id, buffer, 2) == -1) {
+    return prev_id;
+  }
+  uint32_t offset_in_sector = (bytes_offset_in_fat) % 512;
+  uint16_t new_id = *(uint16_t *)(buffer + offset_in_sector);
+  return new_id % 2 == 0 ? new_id & 0x0FFF : new_id >> 4;
+}
 size_t file_read(void *ptr, size_t size, size_t nmemb, struct file_t *stream) {
   if (!stream || !ptr) {
     errno = EFAULT;
     return -1;
   }
+  uint32_t fat1_start =
+      stream->vol->volume_start + stream->vol->reserved_sectors;
+  uint32_t sectors_per_root = stream->vol->root_dir_capacity *
+                              sizeof(struct dir_entry_t) /
+                              stream->vol->bytes_per_sector;
+  uint32_t data_start_sector =
+      fat1_start + stream->vol->fat_count * stream->vol->sectors_per_fat +
+      sectors_per_root;
+  uint16_t fat_id = stream->first_claster_adr;
+  size_t bytes_needed = size * nmemb;
+  size_t byte_counter = 0;
+  size_t ptr_pos = 0;
+  uint32_t offset_in_file = stream->cursor;
   while (1) {
+    uint32_t cluster_start =
+        data_start_sector + (fat_id - 2) * stream->vol->sectors_per_cluster;
+
+    int res;
+    uint8_t buf[SECTOR_SIZE * stream->vol->sectors_per_cluster];
+    if ((res = disk_read(stream->vol->pdisk, cluster_start, buf,
+                         stream->vol->sectors_per_cluster)) == -1) {
+      return -1;
+    }
+    if ((uint32_t)res * SECTOR_SIZE < offset_in_file) {
+      offset_in_file -= (uint32_t)res * SECTOR_SIZE;
+    } else {
+      if (offset_in_file != 0) {
+        memcpy(buf, buf + offset_in_file,
+               (uint32_t)res * SECTOR_SIZE - offset_in_file);
+        byte_counter += (size_t)res * SECTOR_SIZE - offset_in_file;
+        offset_in_file = 0;
+      } else {
+        byte_counter += (size_t)res * SECTOR_SIZE;
+      }
+      if (bytes_needed <= byte_counter) {
+        memcpy(ptr + ptr_pos, buf, bytes_needed - ptr_pos);
+        return bytes_needed;
+      }
+      memcpy(ptr + ptr_pos, buf, (size_t)res * SECTOR_SIZE);
+      ptr_pos += (size_t)res * SECTOR_SIZE;
+      uint16_t temp = find_fat_id(stream->vol, fat_id);
+      if (temp == fat_id) {
+        return -1;
+      }
+      fat_id = temp;
+      if (fat_id >= 0x0FF8) {
+        break;
+      }
+    }
   }
-  return 0;
+  return byte_counter;
 }
 int32_t file_seek(struct file_t *stream, int32_t offset, int whence) {
   if (!stream) {
@@ -211,8 +316,43 @@ int disk_close(struct disk_t *pdisk) {
   return 0;
 }
 struct dir_t *dir_open(struct volume_t *pvolume, const char *dir_path) {
+  if (!pvolume || !dir_path) {
+    errno = EFAULT;
+    return NULL;
+  }
 
-  return NULL;
+  uint8_t entry_buf[INFO_SIZE];
+
+  if (open_helper(pvolume, dir_path, entry_buf, 1) != 0) {
+    return NULL;
+  }
+
+  uint8_t attr = entry_buf[ATTR_OFFSET];
+  if ((attr & 0x10) || (attr & 0x08)) {
+    errno = EISDIR;
+    return NULL;
+  }
+
+  struct dir_t *dir = malloc(sizeof(struct file_t));
+  if (!dir) {
+    errno = ENOMEM;
+    return NULL;
+  }
+
+  strncpy(dir->name, (const char *)entry_buf, NAME_SIZE);
+
+  dir->create_time = *(uint16_t *)(entry_buf + CREATE_TIME_OFFSET);
+  dir->create_date = *(uint16_t *)(entry_buf + CREATE_DATE_OFFSET);
+  dir->last_access_date = *(uint16_t *)(entry_buf + LAST_ACCESS_DATE);
+  dir->last_mod_time = *(uint16_t *)(entry_buf + LAST_MOD_TIME);
+  dir->last_mod_date = *(uint16_t *)(entry_buf + LAST_MOD_DATE);
+
+  dir->first_claster_adr = *(uint16_t *)(entry_buf + FIRST_CLASTER_OFFSET);
+  dir->size = *(uint32_t *)(entry_buf + FILE_SIZE_OFFSET);
+
+  dir->vol = pvolume;
+
+  return dir;
 }
 int dir_read(struct dir_t *pdir, struct dir_entry_t *pentry) { return 0; }
 int dir_close(struct dir_t *pdir) { return 0; }
