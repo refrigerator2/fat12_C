@@ -1,5 +1,6 @@
 #ifndef FILE_READER_H
 #define FILE_READER_H
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stddef.h>
@@ -8,12 +9,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#define MAX_EXTENSION_LEN 3
+#define MAX_FILE_NAME_LEN 8
 
 struct volume_t {
   struct disk_t *did;
   uint32_t fsector;
   struct supersector *ss;
-  struct fat_dir_entry_t *root_dir;
+  struct dir_entry_t *root_dir;
   uint8_t *fat_table;
   uint32_t root_offset;
   uint32_t fat_offset;
@@ -23,7 +26,6 @@ struct file_t {
   uint8_t status;
   uint16_t first_cluster;
   uint32_t size;
-  uint8_t *fat_table;
   struct volume_t *vol;
   uint16_t current_cluster;
   uint32_t offset;
@@ -32,37 +34,55 @@ struct disk_t {
   int id;
   uint16_t sector_size;
 };
-struct dir_t;
+struct dir_t {
+  uint16_t first_cluster;
+  uint16_t current_cluster;
+  uint32_t size;
+  struct volume_t *vol;
+  uint32_t offset;
+};
 
 struct dir_entry_t {
-  char *name;
-  size_t size;
-  uint8_t is_archived;
-  uint8_t is_readonly;
-  uint8_t is_system;
-  uint8_t is_headden;
-  uint8_t is_directory;
-};
+  char name[MAX_FILE_NAME_LEN];
+  char ext[MAX_EXTENSION_LEN];
+  uint8_t attrs;
+  uint8_t reserved;
+  uint8_t creation_time_milisec;
+  uint16_t creation_time;
+  uint16_t creation_day;
+  uint16_t last_access_date;
+  uint16_t elder_word;
+  uint16_t last_change_time;
+  uint16_t last_change_date;
+  uint16_t young_word;
+  uint32_t size;
+} __attribute__((packed));
+
 struct supersector {
-  uint8_t jmp[3];
+  uint8_t jmp_boot[3];
   char oem_name[8];
   uint16_t bytes_per_sector;
   uint8_t sectors_per_cluster;
   uint16_t reserved_sectors;
-  uint8_t fat_count;
-  uint16_t root_dir_entries;
+  uint8_t num_fats;
+  uint16_t root_entries;
   uint16_t total_sectors_16;
-  uint8_t media_type;
-  uint16_t fat_size_16;
-} __attribute__((packed));
+  uint8_t media_descriptor;
+  uint16_t sectors_per_fat;
+  uint16_t sectors_per_track;
+  uint16_t num_heads;
+  uint32_t hidden_sectors;
+  uint32_t total_sectors_32;
 
-struct fat_dir_entry_t {
-  char name[8];
-  char ext[3];
-  uint8_t attrs;
-  uint8_t shit[14];
-  uint16_t first_cluster;
-  uint32_t size;
+  uint8_t drive_number;
+  uint8_t reserved;
+  uint8_t boot_signature;
+  uint32_t volume_id;
+  char volume_label[11];
+  char fs_type[8];
+
+  uint8_t boot_code[448];
+  uint16_t signature;
 } __attribute__((packed));
 
 struct file_t *file_open(struct volume_t *pvolume, const char *file_name);
